@@ -1,9 +1,9 @@
 # Breakout Risk Check — TradingView alert prototype
 
-Status: **source code only, not deployed**. Branch: `feature/breakout-risk-check`.
+Deployed at https://breakout-risk-check.atmamont.workers.dev/. Branch: `feature/breakout-risk-check`.
 
 ## What it does
-TradingView alert -> Cloudflare Worker `POST /hook` -> latest alert stored in Workers KV -> private dashboard shows ticker, FX reference, previous completed week's low, proposed 1% buffered stop, 2R reference, EUR risk and whole-share position size.
+TradingView alert -> Cloudflare Worker `POST /hook` -> separate alert records in Workers KV -> private dashboard shows the last five received alerts. It selects the newest alert by default. Selecting another alert clears the entry price and loads its market data. The page shows ticker, FX reference, previous completed week's low, proposed 1% buffered stop, 2R reference, EUR risk and whole-share position size.
 
 The 1% stop buffer is a **research hypothesis**, NOT a validated trading rule. Previous-week low is NOT necessarily the bottom of a weekly base. No order is placed. No ticker entry on the page; source is the alert.
 
@@ -18,13 +18,13 @@ The 1% stop buffer is a **research hypothesis**, NOT a validated trading rule. P
 {"ticker":"{{ticker}}","exchange":"{{exchange}}","close":"{{close}}","time":"{{time}}"}
 ```
 
-6. Fire a **test** alert and refresh the bookmarked dashboard. Check timestamp and ticker, as the dashboard only stores the latest alert.
+6. Fire a **test** alert and refresh the bookmarked dashboard. Check timestamp and ticker. The dropdown shows the last five received alerts. KV retains separate records so simultaneous writes cannot overwrite alert history. KV propagation can delay history updates across locations; refresh again if needed.
 7. Review prices vs your broker before any trade. Validate all market-data entitlements/limits and production readiness.
 
 ## Constraints
 - TradingView webhook is **server-to-server**, it does not automatically open a website on the phone. You must open the bookmarked dashboard. TradingView app push notification does not become a native deep link to this Worker.
 - Both webhook and dashboard endpoints rely on secret tokens (the read token in the bookmark URL can appear in browser history; keep the page private).
-- Weekly low is based on daily market bars from a Twelve Data account. Data may be delayed/missing; stale/failure causes calculations to remain blank.
+- Weekly low is based on daily market bars from a Twelve Data account. Missing data or source errors block calculations. The prototype does not enforce data age or complete weekly session coverage.
 - FX is from Frankfurter, not the broker's executable conversion rate; snapshot updates only on business days and may be stale intraday. The page displays its date.
 - Previous week's dates are computed in America/New_York and Monday-to-Friday; exchange-specific holidays and non-US listings need additional work.
 - The current version assumes USD-listed equities; do NOT use for non-USD securities.
@@ -33,3 +33,7 @@ The 1% stop buffer is a **research hypothesis**, NOT a validated trading rule. P
 - Account size and per-position allocation are NOT the same. Separate portfolio concentration and sector limits must be checked before execution.
 - No OCO or take-profit orders are placed.
 - Webhook and read tokens should be rotated after exposure.
+
+## Checks
+
+Run `node breakout-risk-check/worker.test.mjs`. It checks access control, the old latest-alert record, simultaneous writes, the five-alert limit, alert selection, entry reset, and delayed response handling. These checks do not validate a trading rule or market-data accuracy.

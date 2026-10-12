@@ -6,16 +6,40 @@ export default {
       if (!env.HOOK_TOKEN || url.searchParams.get("token") !== env.HOOK_TOKEN) return json({error:"Unauthorized"},401);
       let payload;
       try { payload=await request.json(); } catch { return json({error:"JSON expected"},400); }
+      if (!payload || typeof payload !== "object" || Array.isArray(payload)) return json({error:"JSON object expected"},400);
       const symbol=String(payload.ticker||"").toUpperCase().trim();
       const exchange=String(payload.exchange||"").toUpperCase().trim();
       if (!/^[A-Z0-9._-]{1,20}$/.test(symbol) || !/^[A-Z0-9._-]{2,30}$/.test(exchange)) return json({error:"Invalid ticker/exchange"},400);
-      const item={ticker:symbol,exchange,close:Number(payload.close)||null,triggeredAt:new Date().toISOString(),barTime:payload.time||null};
+      const id="alert:"+String(9999999999999-Date.now()).padStart(13,"0")+":"+crypto.randomUUID();
+      const item={id,ticker:symbol,exchange,close:Number(payload.close)||null,triggeredAt:new Date().toISOString(),barTime:payload.time||null};
+      // Separate keys keep simultaneous alerts from overwriting each other.
+      await env.ALERTS.put(id,JSON.stringify(item));
       await env.ALERTS.put("latest",JSON.stringify(item));
       return json({ok:true});
     }
+    if (url.pathname === "/api/alerts") {
+      if (!env.READ_TOKEN || url.searchParams.get("token")!==env.READ_TOKEN) return json({error:"Unauthorized"},401);
+      const listed=await env.ALERTS.list({prefix:"alert:",limit:5});
+      const records=await Promise.all(listed.keys.map(key=>env.ALERTS.get(key.name)));
+      const latest=await env.ALERTS.get("latest");
+      if(latest) records.push(latest);
+      const alerts=new Map();
+      for(const raw of records){
+        if(!raw) continue;
+        const item=JSON.parse(raw);
+        if(!item.id){
+          item.id="alert:"+String(9999999999999-Date.parse(item.triggeredAt)).padStart(13,"0")+":00000000-0000-0000-0000-000000000000";
+          await env.ALERTS.put(item.id,JSON.stringify(item));
+        }
+        alerts.set(item.id,item);
+      }
+      return json({alerts:[...alerts.values()].sort((a,b)=>b.triggeredAt.localeCompare(a.triggeredAt)||a.id.localeCompare(b.id)).slice(0,5)});
+    }
     if (url.pathname === "/api/latest") {
       if (!env.READ_TOKEN || url.searchParams.get("token")!==env.READ_TOKEN) return json({error:"Unauthorized"},401);
-      const raw=await env.ALERTS.get("latest");
+      const id=url.searchParams.get("id")||"latest";
+      if(id!=="latest" && !/^alert:\d{13}:[0-9a-f-]{36}$/.test(id)) return json({error:"Invalid alert ID"},400);
+      const raw=await env.ALERTS.get(id);
       if (!raw) return json({error:"No TradingView alert received yet"},404);
       const alert=JSON.parse(raw);
       let weeklyLow=null,weeklyLabel=null,dataAsOf=null,dataError=null;
@@ -58,14 +82,14 @@ export default {
   }
 };
 const PAGE = String.raw`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#111827"><title>Breakout Risk Check</title><style>
-:root{color-scheme:dark;font-family:system-ui,-apple-system,sans-serif;background:#0b1220;color:#f3f4f6}body{margin:0;padding:22px 14px}main{max-width:460px;margin:auto}h1{font-size:23px;margin:0 0 10px}p,small{color:#aab7c9}section{background:#172235;border:1px solid #344054;border-radius:15px;padding:16px;margin:14px 0}.row{display:flex;justify-content:space-between;align-items:center;gap:10px}.big{font-size:25px;font-weight:750}.muted{color:#9aaabe}input{width:100%;box-sizing:border-box;background:#0c1728;color:white;border:1px solid #667085;padding:13px;border-radius:10px;font-size:20px}label{display:block;margin:0 0 9px;color:#c6d2e0}button{background:#334155;color:white;border:0;padding:12px 20px;border-radius:12px;font-size:17px;cursor:pointer}button:disabled{opacity:.5}.status{font-size:13px;color:#cbd5e1}.bad{color:#fca5a5}.good{color:#86efac}.metric{border-top:1px solid #344054;padding:12px 0}.hint{font-size:12px}a{color:#93c5fd}</style><main>
+:root{color-scheme:dark;font-family:system-ui,-apple-system,sans-serif;background:#0b1220;color:#f3f4f6}body{margin:0;padding:22px 14px}main{max-width:460px;margin:auto}h1{font-size:23px;margin:0 0 10px}p,small{color:#aab7c9}section{background:#172235;border:1px solid #344054;border-radius:15px;padding:16px;margin:14px 0}.row{display:flex;justify-content:space-between;align-items:center;gap:10px}.big{font-size:25px;font-weight:750}.muted{color:#9aaabe}input{width:100%;box-sizing:border-box;background:#0c1728;color:white;border:1px solid #667085;padding:13px;border-radius:10px;font-size:20px}select{width:100%;box-sizing:border-box;background:#0c1728;color:white;border:1px solid #667085;padding:12px;border-radius:10px;font-size:16px;margin-bottom:14px}label{display:block;margin:0 0 9px;color:#c6d2e0}button{background:#334155;color:white;border:0;padding:12px 20px;border-radius:12px;font-size:17px;cursor:pointer}button:disabled{opacity:.5}.status{font-size:13px;color:#cbd5e1}.bad{color:#fca5a5}.good{color:#86efac}.metric{border-top:1px solid #344054;padding:12px 0}.hint{font-size:12px}a{color:#93c5fd}</style><main>
 <h1>Breakout Risk Check</h1><p>TradingView alert → risk plan. No trade is placed.</p>
-<section><div class="row"><strong id="ticker">Waiting for alert…</strong><span class="status" id="seen"></span></div><p class="status" id="state">Checking incoming alerts…</p><button id="refresh">Refresh alert</button></section>
+<section><label for="alerts">Recent alerts · last 5</label><select id="alerts" disabled><option>No alerts received</option></select><div class="row"><strong id="ticker">Waiting for alert…</strong><span class="status" id="seen"></span></div><p class="status" id="state">Checking incoming alerts…</p><button id="refresh">Refresh alert</button></section>
 <section><label for="entry">Planned entry price · EUR</label><input id="entry" type="number" min="0" step=".01" inputmode="decimal" placeholder="e.g. 7.92"><p class="hint">Enter the executable price from your EUR broker, not the USD chart price.</p></section>
 <section><div class="row"><label>Maximum planned risk</label><strong class="big" id="risk">€100</strong></div><div class="row"><button id="minus">− €50</button><button id="plus">+ €50</button></div></section>
 <section><div class="row"><span>Previous completed week's low</span><strong id="low">—</strong></div><div class="row metric"><span>Proposed stop (1% buffer)</span><strong id="stop">—</strong></div><div class="row metric"><span>FX reference, EUR/USD</span><strong id="fx">—</strong></div><p class="hint" id="fresh">Waiting for verified market and FX data.</p><p class="hint">The 1% buffer is an unvalidated research assumption. The previous week's low is not necessarily the base low. Converted EUR levels are indicative, not Trade Republic executable quotes.</p></section>
 <section><div class="row metric"><span>Whole shares</span><strong class="big" id="qty">—</strong></div><div class="row metric"><span>Position cost</span><strong id="cost">—</strong></div><div class="row metric"><span>Planned loss</span><strong id="loss">—</strong></div><div class="row metric"><span>2R reference target</span><strong id="tp">—</strong></div><p class="hint" id="gate">Awaiting data and valid entry. No orders should be placed based on incomplete data.</p><p class="hint">Market stops can fill worse than their trigger. Not investment advice.</p></section></main><script>
-let risk=100,data=null;
+let risk=100,data=null,loadVersion=0;
 const $=id=>document.getElementById(id);
 const money=n=>new Intl.NumberFormat("en-IE",{style:"currency",currency:"EUR"}).format(n);
 function calc(){
@@ -81,12 +105,34 @@ function calc(){
  $("tp").textContent=money(e+2*(e-stopEUR));
  $("gate").textContent=q>0?"Funding cap: "+money(d.allocationCapEUR)+". Validate the weekly structure and broker pricing before submitting an order.":"Position exceeds risk/funding constraints.";
 }
-async function load(){
- $("state").textContent="Loading…";
+async function load(refreshList=false){
+ const version=++loadVersion;
+ data=null;
+ for(const x of ["low","stop","fx"])$(x).textContent="—";
+ $("fresh").textContent="Loading market and FX data…";
+ $("ticker").textContent="Loading alert…";$("seen").textContent="";
+ calc();$("state").textContent="Loading…";
  const t=new URLSearchParams(location.search).get("token");
  if(!t){$("state").textContent="Open your personal URL with ?token=YOUR_READ_TOKEN";return;}
  try{
- const r=await fetch("/api/latest?token="+encodeURIComponent(t),{cache:"no-store"}), j=await r.json();
+ if(refreshList){
+   const r=await fetch("/api/alerts?token="+encodeURIComponent(t),{cache:"no-store"}), j=await r.json();
+   if(version!==loadVersion)return;
+   if(!r.ok)throw Error(j.error||"Cannot load alerts");
+   const previous=$("alerts").value;
+   $("alerts").replaceChildren();
+   for(const alert of j.alerts){
+     const option=document.createElement("option");
+     option.value=alert.id;
+     option.textContent=alert.exchange+":"+alert.ticker+" · "+new Date(alert.triggeredAt).toLocaleString();
+     $("alerts").append(option);
+   }
+   $("alerts").disabled=!j.alerts.length;
+   if(previous!==$("alerts").value)$("entry").value="";
+   if(!j.alerts.length)throw Error("No TradingView alert received yet");
+ }
+ const r=await fetch("/api/latest?token="+encodeURIComponent(t)+"&id="+encodeURIComponent($("alerts").value),{cache:"no-store"}), j=await r.json();
+ if(version!==loadVersion)return;
  if(!r.ok) throw Error(j.error||"Cannot load alert");
  data=j;$("ticker").textContent=j.alert.exchange+":"+j.alert.ticker;
  $("seen").textContent=new Date(j.alert.triggeredAt).toLocaleString();
@@ -94,11 +140,12 @@ async function load(){
  $("fx").textContent=j.usdPerEur?j.usdPerEur.toFixed(5):"Unavailable";
  $("fresh").textContent="Previous week starts "+(j.weekStarting||"?")+" · market as of "+(j.dataAsOf||"?")+" · FX as of "+(j.fxAsOf||"?")+(j.dataError?" · Market error: "+j.dataError:"")+(j.fxError?" · FX error: "+j.fxError:"");
  $("state").textContent="Alert loaded. Confirm the ticker before trading.";calc();
- }catch(e){data=null;$("state").textContent=e.message;calc();}
+ }catch(e){if(version!==loadVersion)return;data=null;$("state").textContent=e.message;calc();}
 }
 $("entry").addEventListener("input",calc);
 $("minus").onclick=()=>{risk=Math.max(50,risk-50);calc()};
 $("plus").onclick=()=>{risk+=50;calc()};
-$("refresh").onclick=load;
-load();
+$("alerts").onchange=()=>{$("entry").value="";load()};
+$("refresh").onclick=()=>load(true);
+load(true);
 </script></html>`;
