@@ -101,4 +101,4 @@ $("minus").onclick=()=>{risk=Math.max(50,risk-50);calc()};
 $("plus").onclick=()=>{risk+=50;calc()};
 $("refresh").onclick=load;
 load();
-</script></html>
+</script></html>`;
